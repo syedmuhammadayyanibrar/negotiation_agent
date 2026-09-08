@@ -30,6 +30,7 @@ class Agent:
         self.my_current_allocation_ask: float = target_value
         self.concession_budget: float = target_value - reservation_value
         self.concessions_made: float = 0.0
+        self._concession_history: List[float] = []  # per-round concession deltas
 
         # ── Round tracking ───────────────────────────────────────────────────
         self.current_round: int = 0
@@ -65,6 +66,9 @@ class Agent:
         self.negotiation_outcome: Optional[str] = None
         self.rounds_to_agreement: Optional[int] = None
 
+        # ── Multi-session history (for RQ1/RQ3 — trust calibration over time) ──
+        self.session_outcomes: List[Dict[str, Any]] = []
+
     # ── Core evaluation ──────────────────────────────────────────────────────
 
     def evaluate_offer(self, offer: OfferMessage) -> float:
@@ -77,6 +81,13 @@ class Agent:
     def deadline_pressure(self) -> float:
         """0.0 = round 1, 1.0 = final round."""
         return self.current_round / max(self.max_rounds, 1)
+
+    @property
+    def concession_rate_per_round(self) -> float:
+        """Average concession made per round so far. 0 if no rounds elapsed."""
+        if not self._concession_history:
+            return 0.0
+        return sum(self._concession_history) / len(self._concession_history)
 
     # ── Hint strategy ────────────────────────────────────────────────────────
 
@@ -100,6 +111,7 @@ class Agent:
         delta = self.my_current_allocation_ask - new_ask
         if delta > 0:
             self.concessions_made += delta
+            self._concession_history.append(delta)
             self.my_current_allocation_ask = new_ask
 
     def remaining_concession_budget(self) -> float:
@@ -121,8 +133,11 @@ class Agent:
         Compute normalized trust signals for updating hint_inflation_score.
         Returns dict with keys: velocity_signal, rejection_signal, timing_signal
         All values in [0, 1] where 1 = strong evidence of lying.
+
+        BUG FIX: was incorrectly passing self.agent_id — now correctly uses
+        counterpart_id to observe the counterpart's concession behavior.
         """
-        # Velocity signal: fast concession = suspicious (agent had more room)
+        # Velocity signal: fast concession = suspicious (counterpart had more room)
         if len(self.counterpart_concession_history) == 0:
             velocity_signal = 0.5  # no data
         else:
@@ -175,6 +190,40 @@ class Agent:
     def update_trust_profile(self, counterpart_id: str, profile_data: Dict[str, Any]) -> None:
         self.trust_profiles[counterpart_id] = profile_data
 
+    def update_hint_inflation_score(
+        self,
+        counterpart_id: str,
+        hint_error: float,
+        alpha: float = 0.3,
+    ) -> None:
+        """
+        EMA update of hint_inflation_score for a counterpart.
+        hint_error > 0 → counterpart overstated utility → increase inflation score.
+        hint_error < 0 → counterpart understated (deflated) → decrease score.
+        alpha: EMA weight for new observation (0.1 = slow update, 0.5 = fast update).
+        """
+        profile = self.get_trust_profile(counterpart_id)
+        current_score = profile.get("hint_inflation_score", 0.3)
+        # Normalize hint_error to [0, 1] — clip extreme values
+        normalized_error = max(0.0, min(1.0, (hint_error + 0.5)))
+        new_score = round((1 - alpha) * current_score + alpha * normalized_error, 4)
+
+        sessions = profile.get("sessions_observed", 0) + 1
+        reliability = (
+            "high" if sessions >= 5 and new_score < 0.25
+            else "low" if sessions >= 5 and new_score > 0.65
+            else "medium" if sessions >= 3
+            else "none"
+        )
+
+        self.trust_profiles[counterpart_id] = {
+            **profile,
+            "hint_inflation_score": new_score,
+            "sessions_observed": sessions,
+            "reliability": reliability,
+            "last_hint_error": hint_error,
+        }
+
     # ── Outcome recording ────────────────────────────────────────────────────
 
     def record_outcome(
@@ -189,6 +238,17 @@ class Agent:
         if final_allocation:
             self.final_utility_achieved = self.utility_function(final_allocation)
 
+        # Append to session history for multi-session research tracking
+        self.session_outcomes.append({
+            "negotiation_id": self.negotiation_id,
+            "outcome": outcome,
+            "final_allocation": final_allocation,
+            "rounds_taken": rounds_taken,
+            "final_utility": self.final_utility_achieved,
+            "hint_strategy": self.hint_strategy,
+            "concession_rate": self.concession_rate_per_round,
+        })
+
     def to_checkpoint(self) -> Dict[str, Any]:
         """Serializable snapshot of key state for Redis checkpoint."""
         return {
@@ -197,6 +257,10 @@ class Agent:
             "current_round": self.current_round,
             "my_current_allocation_ask": self.my_current_allocation_ask,
             "concessions_made": self.concessions_made,
+            "concession_rate_per_round": self.concession_rate_per_round,
             "in_coalition": self.in_coalition,
             "negotiation_outcome": self.negotiation_outcome,
+            "final_utility_achieved": self.final_utility_achieved,
+            "hint_strategy": self.hint_strategy,
+            "trust_profiles": self.trust_profiles,
         }

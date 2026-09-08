@@ -57,8 +57,8 @@ class Orchestrator:
 
         convergence_state = ConvergenceState(
             negotiation_id=self.negotiation_id,
-            stall_limit=5,      # was 3
-            threshold=0.01,     # was 0.02
+            stall_limit=5,
+            threshold=0.01,
         )
         self.convergence_checker = ConvergenceChecker(
             state=convergence_state, channel=self.channel
@@ -70,6 +70,9 @@ class Orchestrator:
         print(f"[ORCH] run_negotiation called with {len(agents)} agents")
         agents_by_id = {a.agent_id: a for a in agents}
         result: Dict[str, Any] = {}
+
+        # Per-round trace log — each entry captures one agent's action in one round
+        round_traces: List[Dict[str, Any]] = []
 
         # Track latest offer per agent pair: (sender, recipient) -> OfferMessage
         active_offers: Dict[str, Any] = {}
@@ -115,7 +118,6 @@ class Orchestrator:
                 agent.current_round = round_num
                 msg = self.channel.receive_nowait(agent.agent_id)
                 print(f"[ORCH] Round {round_num} Agent {agent.agent_id} msg: {msg.message_type if msg else None}")
-                
 
                 if msg is None:
                     continue
@@ -136,6 +138,17 @@ class Orchestrator:
                     if accepted_offer:
                         agreed_allocation = accepted_offer.proposed_allocation
                         agent.record_outcome("agreement", agreed_allocation, round_num)
+
+                        round_traces.append({
+                            "round": round_num,
+                            "agent": agent.agent_id,
+                            "action": "RECEIVE_ACCEPT",
+                            "allocation": agreed_allocation,
+                            "utility": agent.utility_function(agreed_allocation),
+                            "hint": agent.compute_hint(agent.utility_function(agreed_allocation)),
+                            "trust_score": agent.get_trust_profile(msg.sender_agent_id).get("hint_inflation_score", 0.3),
+                        })
+
                         complete_msg = NegotiationCompleteMessage(
                             sender_agent_id=agent.agent_id,
                             recipient_agent_id="broadcast",
@@ -161,8 +174,7 @@ class Orchestrator:
                 if msg.message_type in (MessageType.OFFER, MessageType.COUNTER_OFFER):
                     agent.update_counterpart_model(msg)
                     print(f"[ORCH] Calling decide for {agent.agent_id}")
-                    policy_out = await decide(agent=agent, offer=msg)
-                    # Get policy decision from Gemini
+                    # BUG FIX: was called twice — now called exactly once
                     policy_out = await decide(agent=agent, offer=msg)
 
                     if policy_out.action == PolicyAction.ACCEPT:
@@ -181,12 +193,27 @@ class Orchestrator:
                         # Record agreement from this agent's side
                         agreed_allocation = msg.proposed_allocation
                         agent.record_outcome("agreement", agreed_allocation, round_num)
+
+                        round_traces.append({
+                            "round": round_num,
+                            "agent": agent.agent_id,
+                            "action": "ACCEPT",
+                            "allocation": agreed_allocation,
+                            "utility": agent.utility_function(agreed_allocation),
+                            "hint": agent.compute_hint(agent.utility_function(agreed_allocation)),
+                            "trust_score": agent.get_trust_profile(msg.sender_agent_id).get("hint_inflation_score", 0.3),
+                            "reasoning": policy_out.reasoning,
+                        })
+
                         result = {
                             "outcome": "agreement",
                             "allocation": agreed_allocation,
                             "rounds_taken": round_num,
                             "via_coalition": False,
                         }
+
+                        # ── Trust update post-agreement ───────────────────────
+                        self._update_trust_post_agreement(agent, msg, agreed_allocation)
 
                         # Broadcast complete
                         complete_msg = NegotiationCompleteMessage(
@@ -226,6 +253,18 @@ class Orchestrator:
                         true_utility = agent.utility_function(new_alloc)
                         seq_counters[agent.agent_id] += 1
 
+                        round_traces.append({
+                            "round": round_num,
+                            "agent": agent.agent_id,
+                            "action": "COUNTER",
+                            "allocation": new_alloc,
+                            "utility": true_utility,
+                            "hint": agent.compute_hint(true_utility),
+                            "concessions_made": agent.concessions_made,
+                            "trust_score": agent.get_trust_profile(msg.sender_agent_id).get("hint_inflation_score", 0.3),
+                            "reasoning": policy_out.reasoning,
+                        })
+
                         counter = CounterOfferMessage(
                             sender_agent_id=agent.agent_id,
                             recipient_agent_id=msg.sender_agent_id,
@@ -258,6 +297,19 @@ class Orchestrator:
                         current_allocations[agent.agent_id] = new_alloc
                         true_utility = agent.utility_function(new_alloc)
                         seq_counters[agent.agent_id] += 1
+
+                        round_traces.append({
+                            "round": round_num,
+                            "agent": agent.agent_id,
+                            "action": "REJECT+COUNTER",
+                            "allocation": new_alloc,
+                            "utility": true_utility,
+                            "hint": agent.compute_hint(true_utility),
+                            "concessions_made": agent.concessions_made,
+                            "trust_score": agent.get_trust_profile(msg.sender_agent_id).get("hint_inflation_score", 0.3),
+                            "reasoning": policy_out.reasoning,
+                        })
+
                         counter = CounterOfferMessage(
                             sender_agent_id=agent.agent_id,
                             recipient_agent_id=msg.sender_agent_id,
@@ -281,7 +333,7 @@ class Orchestrator:
             if round_had_agreement:
                 break
 
-            # Check convergence only after minimum 3 rounds of actual negotiation
+            # Check convergence only after minimum 5 rounds of actual negotiation
             if round_num >= 5:
                 deadlocked = await self.convergence_checker.check_and_escalate(
                     current_allocations=current_allocations,
@@ -327,7 +379,29 @@ class Orchestrator:
             )
             result = {"outcome": "breakdown", "reason": "max_rounds", "round": max_rounds}
 
+        result["round_traces"] = round_traces
         return result
+
+    def _update_trust_post_agreement(
+        self,
+        agent: Agent,
+        last_offer: Any,
+        agreed_allocation: Dict[str, float],
+    ) -> None:
+        """
+        After reaching agreement, update the agent's trust profile for the counterpart
+        using EMA based on hint_error derived from behavioral signals.
+        """
+        counterpart_id = last_offer.sender_agent_id
+        stated_hint = getattr(last_offer, "offer_utility_hint", 0.5) or 0.5
+        accepted_value = agreed_allocation.get(counterpart_id, 0.0)
+        hint_error = agent.compute_hint_error(stated_hint, accepted_value)
+        agent.update_hint_inflation_score(counterpart_id, hint_error, alpha=0.3)
+        print(
+            f"[ORCH] Trust update: {agent.agent_id} -> {counterpart_id} "
+            f"hint_error={hint_error:.4f} "
+            f"new_inflation={agent.get_trust_profile(counterpart_id).get('hint_inflation_score', 0.3):.4f}"
+        )
 
     async def _try_coalition(
         self,
