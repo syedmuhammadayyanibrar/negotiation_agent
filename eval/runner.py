@@ -28,28 +28,46 @@ from eval.harness import EvalHarness
 from eval.metrics import compute_all_metrics
 
 
-# ── Canonical research scenarios ─────────────────────────────────────────────
+# ── Canonical enterprise B2B & game-theoretic research scenarios ─────────────
 
 SCENARIOS = {
+    # ── Enterprise B2B Commercial & Procurement Scenarios ─────────────────────
+    "b2b_procurement_buyer_vendor": {
+        "description": "Enterprise B2B Procurement: Enterprise Buyer vs SaaS Vendor negotiating commercial contract & SLA terms",
+        "hint_strategies": ["adaptive", "inflate"],
+        "rq": "B2B-1",
+        "resource_type": "contract_commercial_terms",
+    },
+    "enterprise_sla_settlement": {
+        "description": "Multi-Vendor SLA Dispute: Cloud Provider vs Enterprise Client negotiating SLA credit & liability terms",
+        "hint_strategies": ["honest", "adaptive"],
+        "rq": "B2B-2",
+        "resource_type": "sla_liability_settlement",
+    },
+    # ── Canonical Game-Theoretic Baselines ───────────────────────────────────
     "honest_honest": {
-        "description": "Both agents honest (RQ1 trust calibration baseline)",
+        "description": "Both agents honest (Trust calibration baseline)",
         "hint_strategies": ["honest", "honest"],
         "rq": "RQ1",
+        "resource_type": "commercial_deal_split",
     },
     "inflate_inflate": {
-        "description": "Both agents inflate hints (RQ3: does lying pay when both lie?)",
+        "description": "Both agents inflate claims (Deception dynamics under competitive bidding)",
         "hint_strategies": ["inflate", "inflate"],
         "rq": "RQ3",
+        "resource_type": "commercial_deal_split",
     },
     "honest_vs_inflate": {
-        "description": "Honest vs. inflater (RQ3: lying cost asymmetry)",
+        "description": "Honest buyer vs. inflating vendor (Adversarial concession asymmetry)",
         "hint_strategies": ["honest", "inflate"],
         "rq": "RQ3",
+        "resource_type": "commercial_deal_split",
     },
     "adaptive_vs_honest": {
-        "description": "Adaptive vs. honest (RQ2: does mature trust profile improve outcomes?)",
+        "description": "Adaptive buyer vs. honest vendor (Mature behavioral trust profile)",
         "hint_strategies": ["adaptive", "honest"],
         "rq": "RQ2",
+        "resource_type": "commercial_deal_split",
     },
 }
 
@@ -84,15 +102,16 @@ async def run_scenario(
     reservation_values: Dict[str, float],
     target_values: Dict[str, float],
     max_rounds: int,
-    resource_type: str = "compute_budget",
+    resource_type: str = "commercial_contract_terms",
     total_resource: float = 1.0,
 ) -> Dict[str, Any]:
+    active_resource = scenario_cfg.get("resource_type", resource_type)
     negotiation_id = f"eval_{scenario_name}_{datetime.now().strftime('%H%M%S')}"
     channel = Channel()
     orchestrator = Orchestrator(
         agent_ids=agent_ids,
         negotiation_id=negotiation_id,
-        resource_type=resource_type,
+        resource_type=active_resource,
         total_resource=total_resource,
         channel=channel,
     )

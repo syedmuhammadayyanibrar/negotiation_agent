@@ -1,6 +1,45 @@
-# Decentralized Multi-Agent Negotiation System
+# Autonomous B2B Deal & Procurement Negotiation Engine
+### *A Production-Grade Multi-Agent Bargaining System for Commercial Contracts & Vendor SLAs*
 
-A production-grade agentic AI system where multiple LLM-powered agents negotiate resource allocation without any central authority, using game-theoretic protocols, emergent trust mechanisms, and coalition formation.
+[![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-v2.0-009688.svg)](https://fastapi.tiangolo.com/)
+[![LangGraph](https://img.shields.io/badge/Orchestrator-LangGraph-FF6F00.svg)](https://langchain.com/)
+[![Groq](https://img.shields.io/badge/Inference-Groq-F55036.svg)](https://groq.com/)
+[![Memory](https://img.shields.io/badge/Memory-Qdrant%20%2B%20Redis%20%2B%20Postgres-blueviolet.svg)]()
+
+An autonomous multi-agent bargaining engine engineered to resolve complex, multi-stakeholder B2B procurement deals, vendor pricing agreements, and cloud SLA contracts. Rather than relying on rigid rules or unilateral chatbot prompts, the system deploys autonomous buyer and vendor agents who negotiate contract terms via an asynchronous 17-message protocol, model counterparty concession velocities, and trigger cooperative coalition enforcement when deadlocks occur.
+
+---
+
+## 💼 Business Problem & Enterprise Value
+
+In enterprise procurement, commercial deal cycles take weeks of back-and-forth exchanges. Misaligned pricing concessions, opaque vendor posturing, and negotiation deadlocks cost enterprises hundreds of thousands of dollars in delayed software rollouts and unfavorable terms. 
+
+This engine automates multi-party commercial bargaining by:
+1. **Accelerating Deal Cycles**: Reaches optimal contract settlements in 3 to 8 structured rounds instead of multi-week manual negotiations.
+2. **Eliminating Deception & Adverse Concessions**: Tracks counterpart behavioral signals across sessions, dynamically detecting hint inflation and penalizing bad-faith concessions.
+3. **Guaranteed Settlement via Coalitions**: Automatically triggers cooperative game-theoretic coalition protocols when bilateral negotiations reach a deadlock.
+
+```text
+                  ┌────────────────────────────────────────────────────────┐
+                  │          ENTERPRISE BUYER AGENT (LangGraph)           │
+                  │  Private Utility Function • BATNA • Concession Budget │
+                  └───────────────────────────┬────────────────────────────┘
+                                              │ Async 17-Message Protocol
+                                              ▼
+                  ┌────────────────────────────────────────────────────────┐
+                  │        DECENTRALIZED BARGAINING & CONVERGENCE          │
+                  │  Deadlock Detection • Nash Distance • Trust Tracking   │
+                  └───────────────────────────┬────────────────────────────┘
+                                              │ Counter-Offers & Settlement
+                                              ▼
+                  ┌────────────────────────────────────────────────────────┐
+                  │          SAAS VENDOR AGENT (LangGraph)                │
+                  │   Reservation Pricing • SLA Caps • Coalition Logic     │
+                  └────────────────────────────────────────────────────────┘
+```
+
+---
 
 ## Architecture
 
@@ -25,7 +64,7 @@ negotiation_agent/
 │   ├── metrics.py          # Jain fairness, Gini, Nash, Pareto, trust calibration, lying cost
 │   ├── baselines.py        # Random, fixed hierarchy, central orchestrator, tit-for-tat
 │   ├── harness.py          # Full comparison report + scenario suite + JSON export
-│   └── runner.py           # Standalone CLI eval runner (no server needed)
+│   └── runner.py           # Standalone CLI eval runner with B2B procurement suites
 └── api/
     └── main.py             # FastAPI endpoints (v2.0.0)
 ```
@@ -47,20 +86,20 @@ pip install -r requirements.txt
 uvicorn api.main:app --reload
 ```
 
-## Run a Negotiation
+## Run a Commercial Deal Negotiation
 
 ```bash
 curl -X POST http://localhost:8000/negotiate \
   -H "Content-Type: application/json" \
   -d '{
-    "negotiation_id": "test-001",
-    "agent_ids": ["agent_a", "agent_b"],
-    "resource_type": "compute_budget",
+    "negotiation_id": "b2b-procure-2026-09",
+    "agent_ids": ["enterprise_buyer", "saas_vendor"],
+    "resource_type": "contract_commercial_terms",
     "total_resource": 1.0,
     "max_rounds": 10,
-    "hint_strategies": {"agent_a": "honest", "agent_b": "inflate"},
-    "reservation_values": {"agent_a": 0.3, "agent_b": 0.25},
-    "target_values": {"agent_a": 0.6, "agent_b": 0.65}
+    "hint_strategies": {"enterprise_buyer": "adaptive", "saas_vendor": "inflate"},
+    "reservation_values": {"enterprise_buyer": 0.35, "saas_vendor": 0.30},
+    "target_values": {"enterprise_buyer": 0.65, "saas_vendor": 0.70}
   }'
 
 # Include per-round traces in response:
@@ -70,14 +109,11 @@ curl -X POST "http://localhost:8000/negotiate?traces=true" ...
 ## Run Evals (Standalone CLI — No Server Required)
 
 ```bash
-# Run all 4 canonical research scenarios
+# Run B2B enterprise procurement & SLA bargaining scenarios
+python -m eval.runner --scenarios b2b_procurement_buyer_vendor enterprise_sla_settlement
+
+# Run all scenarios (B2B procurement + game-theoretic research baselines)
 python -m eval.runner
-
-# Run specific scenarios
-python -m eval.runner --scenarios honest_honest honest_vs_inflate
-
-# Custom agents and round count
-python -m eval.runner --agents alpha beta gamma --max-rounds 15
 
 # Reports saved to: research_output/eval_YYYYMMDD_HHMMSS.json
 ```
